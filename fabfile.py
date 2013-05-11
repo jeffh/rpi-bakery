@@ -4,43 +4,24 @@ from StringIO import StringIO
 from fabric.api import sudo, task, put, hide, reboot
 from fabric.contrib.files import append, contains, sed, comment
 
-class _DeferCommand(object):
-    def __init__(self, cmd):
-        self.cmd = cmd
-        self.needs_to_execute = False
+from utils import DeferCommand, ensure_line
 
-    def __call__(self, fn):
-        self.needs_to_execute = True
-        return fn
+apt_clean = DeferCommand(lambda: sudo('apt-get clean && apt-get autoremove -qy'))
+requires_restart = DeferCommand(reboot)
 
-    def run(self):
-        if self.needs_to_execute:
-            self.cmd()
-        self.needs_to_execute = False
-
-apt_clean = _DeferCommand(lambda: sudo('apt-get clean && apt-get autoremove -qy'))
-requires_restart = _DeferCommand(reboot)
-
-def _ensure_line(filename, find_text, replace_text=None):
-    if replace_text is None:
-        replace_text = find_text
-    if contains(filename, find_text, use_sudo=True):
-        sed(filename, find_text, replace_text, use_sudo=True)
-    else:
-        append(filename, replace_text, use_sudo=True)
-
-@task
 def cleanup():
     apt_clean.run()
     requires_restart.run()
 
 @task
 def remove_desktop_files():
+    "Remove desktop Files bundled in the raspbian distro."
     sudo('rm -rf Desktop python_games; true')
 
 @task
 @apt_clean
 def set_packages_from_list(filename):
+    "Ensures the given filename of packages installed. This will uninstall packages that are not in the given file."
     with open(filename) as h:
         keep_pkgs = set(h.read().splitlines())
     with hide('output'):
@@ -54,6 +35,7 @@ def set_packages_from_list(filename):
 
 @task
 def set_swapsize(size=100, swappiness=1, cache_pressure=50):
+    "Specifies the raspberry pi's swap size, usage, and swap file cache."
     if size > 0:
         sudo('echo "CONF_SWAPSIZE={0}" > /etc/dphys-swapfile'.format(size))
         sudo('dphys-swapfile setup')
@@ -61,13 +43,18 @@ def set_swapsize(size=100, swappiness=1, cache_pressure=50):
     else:
         sudo('swapoff -a')
 
-    _ensure_line('/etc/sysctl.conf', 'vm.swappiness=[0-9]*', 'vm.swappiness={0}'.format(swappiness))
-    _ensure_line('/etc/sysctl.conf', 'vm.vfs_cache_pressure=[0-9]*', 'vm.vfs_cache_pressure={0}'.format(cache_pressure))
+    ensure_line('/etc/sysctl.conf', 'vm.swappiness=[0-9]*', 'vm.swappiness={0}'.format(swappiness))
+    ensure_line('/etc/sysctl.conf', 'vm.vfs_cache_pressure=[0-9]*', 'vm.vfs_cache_pressure={0}'.format(cache_pressure))
 
 @task
 @apt_clean
 def replace_openssh_server_with_dropbear(allow_root=True, allow_passwords=True):
-    "http://blog.extremeshok.com/archives/1081"
+    """Installs dropbear to port 22. For recovery reasons, openssh will be moved to port 23.
+
+    You'll need to manually remove openssh-server package:
+        apt-get purge -y openssh-server
+
+    """
     sudo("apt-get install -yq dropbear openssh-client")
     print '  -> Moving OpenSSH server to port 23, you will have to remove openssh-server manually'
     sed('/etc/ssh/sshd_config', 'Port [0-9]*', 'Port 23', use_sudo=True)
@@ -86,38 +73,43 @@ def replace_openssh_server_with_dropbear(allow_root=True, allow_passwords=True):
 @requires_restart
 @apt_clean
 def update_raspbian():
-    "http://blog.extremeshok.com/archives/1081"
+    "Updates all packages and upgrades the distro."
     sudo("apt-get -qy update && apt-get -qy dist-upgrade && apt-get -qy autoremove && apt-get -qy autoclean")
 
 @task
 @requires_restart
 def optimize_mount():
-    "http://blog.extremeshok.com/archives/1081"
+    "Disables writing access timestamps to the file system."
     sudo("sed -i 's/defaults,noatime/defaults,noatime,nodiratime/g' /etc/fstab")
 
 @task
 @requires_restart
 def disable_ipv6():
-    "http://blog.extremeshok.com/archives/1081"
+    "Disable IPv6."
     sudo('echo "net.ipv6.conf.all.disable_ipv6=1" > /etc/sysctl.d/disableipv6.conf')
-    _ensure_line("/etc/modprobe.d/blacklist", "blacklist ipv6")
+    ensure_line("/etc/modprobe.d/blacklist", "blacklist ipv6")
     sudo("sed -i '/::/s%^%#%g' /etc/hosts")
 
 @task
 @requires_restart
 def use_noop_scheduler():
-    "http://blog.extremeshok.com/archives/1081"
-    _ensure_line('/boot/cmdline.txt', 'deadline', 'noop')
+    """Switches from deadline to noop scheduler of processes for the kernel.
+
+    Noop minimizes CPU usage of the scheduler.
+
+    """
+    ensure_line('/boot/cmdline.txt', 'deadline', 'noop')
 
 @task
 def remove_extra_tty_and_gettys():
-    "http://blog.extremeshok.com/archives/1081"
+    "Remove extra terminals (tty) per session."
     comment('/etc/inittab', '[2-6]:23:respawn:/sbin/getty 38400 tty[2-6]', use_sudo=True)
 
 
 @task
 @requires_restart
 def set_static_ip(ipaddr, netmask='255.255.255.0', network='192.168.1.0', gateway='192.168.1.1', broadcast='192.168.1.255'):
+    "Sets the raspberry pi to use a static ip address."
     # backup interface
     sudo('cp -f /etc/network/interfaces /etc/network/interfaces.dhcp-backup')
     interface = """
@@ -138,6 +130,7 @@ gateway {gateway}
 
 @task
 def build_system(packages_filelist, static_ip=None, swap_size=512):
+    "Builds the entire system."
     with open(packages_filelist) as h:
         h.read(1) # try to read file
 
