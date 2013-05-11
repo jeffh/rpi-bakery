@@ -4,14 +4,48 @@ from StringIO import StringIO
 from fabric.api import sudo, task, put, hide, reboot
 from fabric.contrib.files import append, contains, sed, comment
 
-from utils import DeferCommand, ensure_line
+from utils import DeferCommand, ensure_line, update_rpi_config, OVERCLOCKING_MODES, trim_greeting
 
 apt_clean = DeferCommand(lambda: sudo('apt-get clean && apt-get autoremove -qy'))
 requires_restart = DeferCommand(reboot)
 
-def cleanup():
+def _cleanup():
     apt_clean.run()
     requires_restart.run()
+
+cleanup = DeferCommand(_cleanup)
+
+@task
+def restart():
+    "Restarts the machine."
+    reboot()
+
+@task
+@requires_restart
+def set_gpu_memory(mem_in_mb=16):
+    """Sets the number of megabytes allocated for the GPU.
+
+    Should probably be in powers of 2: 16, 32, 64, 128.
+
+    """
+    print " ~> GPU Memory:", mem_in_mb, "MB"
+    update_rpi_config(gpu_mem=int(mem_in_mb))
+
+@task
+@requires_restart
+def overclock(mode='modest'):
+    """Programmatically set the overclocking modes.
+
+    Available choices: none, modest, medium, high, turbo
+    Defaults to none.
+
+    """
+    mode = str(mode).lower()
+    parameters = OVERCLOCKING_MODES[mode]
+    print " ~> Overclock:", mode
+    for key, value in parameters.items():
+        print "   ", key, "=", repr(value)
+    update_rpi_config(**parameters)
 
 @task
 def remove_desktop_files():
@@ -25,7 +59,7 @@ def set_packages_from_list(filename):
     with open(filename) as h:
         keep_pkgs = set(h.read().splitlines())
     with hide('output'):
-        installed_pkgs = sudo("dpkg --get-selections | grep -v 'deinstall$'")
+        installed_pkgs = trim_greeting(sudo("dpkg --get-selections | grep -v 'deinstall$'"))
     installed_pkgs = re.split(r'[ \n\t\r]+', installed_pkgs)
     installed_pkgs = set(p.strip() for p in installed_pkgs) - set(['install'])
     pkgs_to_purge = installed_pkgs - keep_pkgs
@@ -57,8 +91,9 @@ def replace_openssh_server_with_dropbear(allow_root=True, allow_passwords=True):
     """
     sudo("apt-get install -yq dropbear openssh-client")
     print '  -> Moving OpenSSH server to port 23, you will have to remove openssh-server manually'
-    sed('/etc/ssh/sshd_config', 'Port [0-9]*', 'Port 23', use_sudo=True)
-    sudo("service ssh restart")
+    with settings(warn_only=True):
+        sed('/etc/ssh/sshd_config', 'Port [0-9]*', 'Port 23', use_sudo=True)
+        sudo("service ssh restart")
     sed('/etc/default/dropbear', 'NO_START=[0-9]', 'NO_START=0', use_sudo=True)
     args = []
     if not allow_root:
@@ -105,7 +140,6 @@ def remove_extra_tty_and_gettys():
     "Remove extra terminals (tty) per session."
     comment('/etc/inittab', '[2-6]:23:respawn:/sbin/getty 38400 tty[2-6]', use_sudo=True)
 
-
 @task
 @requires_restart
 def set_static_ip(ipaddr, netmask='255.255.255.0', network='192.168.1.0', gateway='192.168.1.1', broadcast='192.168.1.255'):
@@ -129,6 +163,8 @@ gateway {gateway}
     put(tmp, '/etc/network/interfaces', use_sudo=True, mode=644)
 
 @task
+@apt_clean
+@requires_restart
 def build_system(packages_filelist, static_ip=None, swap_size=512):
     "Builds the entire system."
     with open(packages_filelist) as h:
