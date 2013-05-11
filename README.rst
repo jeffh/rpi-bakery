@@ -25,14 +25,14 @@ Then you can use fabric::
 You'll probably just want to use `build_system` task with one of the given
 packages for a quick reset of your raspberry pi::
 
-    fab build_system:raspberrypi-default-packages.txt
+    fab -H pi@pi build_system:raspberrypi-default-packages.txt
 
 Use a comma to specify a static IP::
 
-    fab build_system:raspberrypi-default-packages.txt,192.168.1.2
+    fab -H pi@pi build_system:raspberrypi-default-packages.txt,192.168.1.2
 
 You can use the other txt file to remove most of the pre-installed packages::
 
-    fab build_system:raspberrypi-min-packages.txt
+    fab -H pi@pi build_system:raspberrypi-min-packages.txt
 
 That's it!
